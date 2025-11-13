@@ -32,7 +32,7 @@ import { useApp } from '@/contexts/AppContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { formatNumber, formatEnergyValue, formatCurrency, calculateDetailedCosts, getPeriodDates, calculateTotalForPeriod } from '@/utils/energyCalculations';
 import { router } from 'expo-router';
-import { useTranslation, Translations } from '@/constants/languages';
+import { useTranslation } from '@/constants/languages';
 
 const { width } = Dimensions.get('window');
 
@@ -168,8 +168,8 @@ export default function EnergyDashboard() {
     });
 
     meterTypes.forEach(type => {
-      dynamicWidgets.push({ id: `metertype-total-consumption-${type}`, title: `${t.totalConsumption} ${t[type as keyof Translations] || type}`, requiresPV: false, meterType: type });
-      dynamicWidgets.push({ id: `metertype-total-costs-${type}`, title: `${t.totalCosts} ${t[type as keyof Translations] || type}`, requiresPV: false, meterType: type });
+      dynamicWidgets.push({ id: `metertype-total-consumption-${type}`, title: `${t.totalConsumption} ${type}`, requiresPV: false, meterType: type });
+      dynamicWidgets.push({ id: `metertype-total-costs-${type}`, title: `${t.totalCosts} ${type}`, requiresPV: false, meterType: type });
     });
 
     return [...staticWidgets, ...dynamicWidgets];
@@ -300,7 +300,7 @@ export default function EnergyDashboard() {
       icon: '🌱',
       text: language === 'de' ? 'Verfolgen Sie Ihre CO₂-Einsparungen und Umweltauswirkungen.' : 
             language === 'en' ? 'Track your CO₂ savings and environmental impact.' : 
-            'Отслеживайте экономию CO₂ и воздействие на окружающую среду.'
+            'Отслеживайте экономию CO₂ и воздействие на окружающею среду.'
     },
     {
       icon: '🏠',
@@ -446,27 +446,84 @@ export default function EnergyDashboard() {
               }
             }
             
-            if (widgetId.startsWith('meter-last-month-consumption-')) {
-                const deviceId = widgetId.replace('meter-last-month-consumption-', '');
-                const device = devices.find(d => d.id === deviceId);
-                if (!device) return null;
+if (widgetId.startsWith('meter-last-month-consumption-')) {
+	// Ermitteln des Geräte-IDs
+	const deviceId = widgetId.replace('meter-last-month-consumption-', '');
+	const device = devices.find(d => d.id === deviceId);
+	if (!device) return null;
 
-                const now = new Date();
-                const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-                const { startDate, endDate } = getPeriodDates('monthly', lastMonth);
+	// Referenzdatum: letzter Monat
+	const now = new Date();
+	const lastMonthRef = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+	let { startDate, endDate } = getPeriodDates('monthly', lastMonthRef);
 
-                const consumption = calculateTotalForPeriod(meterReadings, startDate, endDate, [device.id]);
+	// Sicherstellen, dass endDate das gesamte Monatsende einschließt
+	startDate = new Date(startDate);
+	endDate = new Date(endDate);
+	endDate.setHours(23, 59, 59, 999);
 
-                return <EnergyCard
-                    key={widgetId}
-                    id={widgetId}
-                    title={`${device.name} - Letzter Monat`}
-                    value={formatNumber(consumption.total, 1)}
-                    unit={'kWh'}
-                    icon={<Zap color="#3B82F6" size={20} />}
-                    color={'#3B82F6'}
-                />;
-            }
+	// Alle Messwerte für dieses Gerät, passend sortiert
+	const readingsForMeter = meterReadings
+		.filter(r => r.meterId === deviceId)
+		.map(r => ({ ...r, timestamp: new Date(r.timestamp) }))
+		.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+	// Nur Messwerte des relevanten Typs (falls vorhanden), sonst alle
+	const typeFilter = 'electricity';
+	const readingsOfType = readingsForMeter.filter(r => !r.type || r.type === typeFilter);
+
+	// Messwerte innerhalb des Monatszeitraums
+	const readingsInPeriod = readingsOfType.filter(r => r.timestamp >= startDate && r.timestamp <= endDate);
+
+	let consumptionValue = 0;
+
+	if (readingsInPeriod.length >= 2) {
+		// Direkte Differenz innerhalb des Zeitraums
+		const first = readingsInPeriod[0].reading;
+		const last = readingsInPeriod[readingsInPeriod.length - 1].reading;
+		consumptionValue = last - first;
+	} else {
+		// Fallbacks: Suche letzte Messung vor Start und erste nach Ende
+		const before = readingsOfType.filter(r => r.timestamp < startDate).pop();
+		const after = readingsOfType.find(r => r.timestamp > endDate);
+
+		if (before && after) {
+			consumptionValue = after.reading - before.reading;
+		} else if (readingsInPeriod.length === 1) {
+			// Wenn genau eine Messung im Zeitraum vorhanden ist, versuche Differenz zur vorherigen Messung
+			const only = readingsInPeriod[0];
+			const prev = readingsOfType.filter(r => r.timestamp < only.timestamp).pop();
+			if (prev) {
+				consumptionValue = only.reading - prev.reading;
+			} else {
+				consumptionValue = 0;
+			}
+		} else {
+			consumptionValue = 0;
+		}
+	}
+
+	// Schutz gegen negative oder NaN-Werte
+	if (typeof consumptionValue !== 'number' || isNaN(consumptionValue) || consumptionValue < 0) {
+		consumptionValue = 0;
+	}
+
+	// Optional: Debug-Log nur in Entwicklung
+	if (__DEV__) {
+		console.log(`Meter ${deviceId} - last month consumption:`, consumptionValue, 'kWh', { startDate, endDate, readingsInPeriodCount: readingsInPeriod.length });
+	}
+
+	return <EnergyCard
+		key={widgetId}
+		id={widgetId}
+		title={`${device.name} - Letzter Monat`}
+		value={formatNumber(consumptionValue, 2)}
+		unit={'kWh'}
+		icon={<Zap color="#3B82F6" size={20} />}
+		color={'#3B82F6'}
+	/>;
+}
+
 
             if (widgetId === 'grid-feed-in' && pvSystemEnabled) {
               return <EnergyCard
